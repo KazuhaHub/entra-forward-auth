@@ -1,0 +1,35 @@
+# Build output
+/bin/
+/dist/
+/entra-forward-auth
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+cover.out
+
+# Fuzzing corpus generated locally (committed seeds live in testdata/fuzz)
+fuzz-cache/
+
+# Local secrets and key material
+*.pem
+*.key
+*.crt
+*.cer
+*.pfx
+*.p12
+!**/testdata/**
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local workspace files
+go.work
+go.work.sum
