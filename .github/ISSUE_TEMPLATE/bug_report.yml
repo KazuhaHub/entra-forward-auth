@@ -1,0 +1,54 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste passwords, client secrets, private keys, tokens or real tenant/client IDs.
+        For security vulnerabilities use a private security advisory instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `entra-forward-auth version`, or the image tag.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How do you run it?
+      options: [Binary, Container, systemd, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: proxy
+    attributes:
+      label: Reverse proxy
+      options: [nginx, Traefik, Caddy, Other, None]
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Environment variables and flags with secrets removed.
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines, including the AADSTS code if present. Remove user names you do not want to share.
+      render: text
