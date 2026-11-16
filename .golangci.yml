@@ -1,0 +1,121 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - gocheckcompilerdirectives
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - intrange
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - perfsprint
+    - prealloc
+    - predeclared
+    - reassign
+    - revive
+    - sloglint
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - wastedassign
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - paramTypeCombine
+        - whyNoLint
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: error-return
+        - name: error-naming
+        - name: error-strings
+        - name: if-return
+        - name: indent-error-flow
+        - name: receiver-naming
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-naming
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: increment-decrement
+        - name: range
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: empty-block
+    sloglint:
+      no-mixed-args: false
+      kv-only: true
+    staticcheck:
+      checks:
+        - all
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Tests may ignore a few things production code must not.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - noctx
+          - unparam
+          - gocritic
+          - prealloc
+          - revive
+          - usestdlibvars
+          - contextcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/KazuhaHub/entra-forward-auth
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
