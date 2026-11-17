@@ -218,7 +218,14 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, reload 
 	m := metrics.New(version.Version, version.Revision)
 	credCache := cache.New(cfg.CacheTTL, cfg.CacheMaxEntries, nil)
 	limiter := ratelimit.New(ratelimit.Config{
-		Limit:   cfg.FailLimit,
+		// IP keys have their own limit so that callers sharing one source
+		// address (for example a RADIUS server) are not locked out together.
+		KeyLimit: func(key string) int {
+			if strings.HasPrefix(key, "ip:") {
+				return cfg.FailLimitIP
+			}
+			return cfg.FailLimit
+		},
 		Window:  cfg.FailWindow,
 		BanTime: cfg.BanTime,
 		MaxKeys: cfg.RatelimitMaxKeys,
@@ -282,7 +289,7 @@ func serve(ctx context.Context, cfg *config.Config, logger *slog.Logger, reload 
 		"version", version.Version, "revision", version.Revision,
 		"tenant_id", cfg.TenantID, "client_id", cfg.ClientID,
 		"listen", listeners[0].ln.Addr().String(), "metrics_listen", cfg.MetricsListen,
-		"cache_ttl", cfg.CacheTTL.String(), "fail_limit", cfg.FailLimit,
+		"cache_ttl", cfg.CacheTTL.String(), "fail_limit", cfg.FailLimit, "fail_limit_ip", cfg.FailLimitIP,
 	)
 
 	errCh := make(chan error, len(listeners))

@@ -100,7 +100,8 @@ Notable properties:
   as metric labels. The cache holds only `SHA-256(salt || user || 0x00 || password)` with a per-process
   random salt.
 - Failures are counted per client IP and per user (IPv6 clients per /64). After `FAIL_LIMIT` failures
-  within `FAIL_WINDOW` the key is banned for `BAN_TIME` without calling Entra. Attempts are reserved
+  (`FAIL_LIMIT_IP` for IP keys, when set) within `FAIL_WINDOW` the key is banned for `BAN_TIME` without
+  calling Entra. Attempts are reserved
   atomically before Entra is called, so parallel guessing cannot exceed `FAIL_LIMIT`, and an attempt
   counts even if the client disconnects. Domain allow-list rejections count against the IP only.
 - Errors that indicate a broken service configuration (expired certificate, wrong client, wrong scope)
@@ -290,10 +291,11 @@ Durations accept bare seconds (`600`) or Go durations (`10m`).
 | `REALM` | `-realm` | — | Adds `WWW-Authenticate` on 401 when set |
 | `CACHE_TTL` | `-cache-ttl` | `10m` | Success cache lifetime; 0 disables |
 | `CACHE_MAX_ENTRIES` | `-cache-max-entries` | `10000` | Cache bound |
-| `FAIL_WINDOW` | `-fail-window` | `10m` | Failure counting window; must be > 0 when `FAIL_LIMIT` > 0 |
-| `FAIL_LIMIT` | `-fail-limit` | `5` | Failures per IP / per user before a ban; 0 disables |
-| `BAN_TIME` | `-ban-time` | `15m` | Ban duration; must be > `ENTRA_TIMEOUT` when `FAIL_LIMIT` > 0 |
-| `RATELIMIT_MAX_KEYS` | `-ratelimit-max-keys` | `100000` | Bound on tracked IPs + users; must be >= 8 x `ENTRA_MAX_CONCURRENCY` when `FAIL_LIMIT` > 0 |
+| `FAIL_WINDOW` | `-fail-window` | `10m` | Failure counting window; must be > 0 when `FAIL_LIMIT` or `FAIL_LIMIT_IP` > 0 |
+| `FAIL_LIMIT` | `-fail-limit` | `5` | Failures per user (and per IP unless `FAIL_LIMIT_IP` is set) before a ban; 0 disables |
+| `FAIL_LIMIT_IP` | `-fail-limit-ip` | = `FAIL_LIMIT` | Failures per IP before an IP ban; 0 turns per-IP counting and banning off; unset or empty follows `FAIL_LIMIT` |
+| `BAN_TIME` | `-ban-time` | `15m` | Ban duration; must be > `ENTRA_TIMEOUT` when `FAIL_LIMIT` or `FAIL_LIMIT_IP` > 0 |
+| `RATELIMIT_MAX_KEYS` | `-ratelimit-max-keys` | `100000` | Bound on tracked IPs + users; must be >= 8 x `ENTRA_MAX_CONCURRENCY` when `FAIL_LIMIT` or `FAIL_LIMIT_IP` > 0 |
 | `LOG_LEVEL` | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `-log-format` | `json` | `json` or `text` |
 | `SHUTDOWN_DRAIN` | `-shutdown-drain` | `0s` | On shutdown, `/readyz` returns 503 for this long before the listener closes (lets load balancers notice) |
@@ -302,7 +304,7 @@ Durations accept bare seconds (`600`) or Go durations (`10m`).
 
 Validation: required values present; exactly one credential (certificate and key, or a secret file); files
 readable and parseable at start; durations and limits >= 0 (`FAIL_WINDOW` and `BAN_TIME` > 0 while
-`FAIL_LIMIT` > 0, `BAN_TIME` > `ENTRA_TIMEOUT`, and `RATELIMIT_MAX_KEYS` >= 8 x
+`FAIL_LIMIT` or `FAIL_LIMIT_IP` > 0, `BAN_TIME` > `ENTRA_TIMEOUT`, and `RATELIMIT_MAX_KEYS` >= 8 x
 `ENTRA_MAX_CONCURRENCY`); the tenant must be a tenant ID or verified domain (`common`, `organizations` and
 `consumers` are rejected); CIDRs valid; the authority must be `https://`
 (plain `http://` only for `127.0.0.1` or `localhost`, for tests). The tenant ID and client ID are logged at
@@ -325,6 +327,28 @@ exit code 0 or 1; without `-url` it derives the URL from `LISTEN`; used by the c
 peer is not trusted, or the header is missing or invalid, the peer address is used and a warning is logged
 at most once per minute per peer. IPv6 clients are rate-limited per /64 prefix. The client IP feeds the rate limiter, so getting it wrong means either
 one shared ban bucket for all users (the proxy's address) or spoofable limits.
+
+### Callers that share one source address (`FAIL_LIMIT_IP`)
+
+Some callers send every user's request from the same address, for example a RADIUS server that calls
+`/auth` from the local host through a REST module. With per-IP banning, a handful of mistyped passwords
+from different users would ban that one address and lock everybody out. Set `FAIL_LIMIT_IP=0` to turn
+per-IP counting, reservation and banning off; per-user limits keep working under `FAIL_LIMIT`
+(and `FAIL_LIMIT=0` with a positive `FAIL_LIMIT_IP` gives IP-only limiting). Any other value sets a separate
+IP limit, for example `FAIL_LIMIT=5` with `FAIL_LIMIT_IP=50`. Left unset, `FAIL_LIMIT_IP` equals
+`FAIL_LIMIT`, which is the behaviour of earlier versions. With `FAIL_LIMIT_IP=0`, domain allow-list
+rejections are not counted either.
+
+The trade-off: `FAIL_LIMIT_IP` applies to **every** client address served by the instance, not only to
+the shared one. With `FAIL_LIMIT_IP=0`, any address can try many different usernames (password spraying)
+without being banned; only each individual user is protected. Use it only on an instance whose callers
+all share an address — for example a dedicated instance for the RADIUS server, separate from the one
+behind a public reverse proxy — and compensate with `ENTRA_ALLOWED_DOMAINS` and network restrictions so
+only the intended caller can reach it.
+
+A caller that connects from loopback without sending `X-Real-IP` makes the service log a warning (at most
+once a minute) about the missing client IP header. On such a dedicated instance set `CLIENT_IP_HEADER=`
+(empty) to use the peer address and silence it.
 
 ## Reverse proxy integration
 
@@ -670,8 +694,8 @@ second factor. Treat the endpoint as a password-only door and compensate:
   Anything that can reach it can ask it to verify credentials and can supply the client IP header if its
   address is in `TRUSTED_PROXIES`. Keep `TRUSTED_PROXIES` as narrow as possible. Put `/metrics` on a
   separate listener (`METRICS_LISTEN`) or block it at the proxy.
-- **Keep rate limiting on.** `FAIL_LIMIT=0` disables it. The service bans by IP and by user, which also
-  helps against password spraying, but Entra's own smart lockout still applies to the account: a
+- **Keep rate limiting on.** `FAIL_LIMIT=0` together with `FAIL_LIMIT_IP=0` disables it. The service bans
+  by IP and by user; the IP bans also help against password spraying (not with `FAIL_LIMIT_IP=0`), but Entra's own smart lockout still applies to the account: a
   determined attacker can lock a user out (`AADSTS50053`). Alert on the ban and reject metrics.
 - **Anyone who knows a user name can lock that user out.** `FAIL_LIMIT` wrong passwords for a user ban that
   user for `BAN_TIME`, and bans are checked before the cache on purpose (so a cached valid login cannot be
