@@ -312,3 +312,64 @@ func TestHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestFailLimitIP(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      map[string]string
+		args     []string
+		wantUser int
+		wantIP   int
+		wantErr  string
+	}{
+		{"unset follows FAIL_LIMIT default", nil, nil, 5, 5, ""},
+		{"unset follows FAIL_LIMIT env", map[string]string{"FAIL_LIMIT": "9"}, nil, 9, 9, ""},
+		{"empty env counts as unset", map[string]string{"FAIL_LIMIT": "7", "FAIL_LIMIT_IP": ""}, nil, 7, 7, ""},
+		{"separate value", map[string]string{"FAIL_LIMIT": "5", "FAIL_LIMIT_IP": "20"}, nil, 5, 20, ""},
+		{"zero disables IP limiting", map[string]string{"FAIL_LIMIT_IP": "0"}, nil, 5, 0, ""},
+		{"flag wins over env", map[string]string{"FAIL_LIMIT_IP": "20"}, []string{"-fail-limit-ip", "0"}, 5, 0, ""},
+		{"flag alone", nil, []string{"-fail-limit-ip=8"}, 5, 8, ""},
+		{"IP-only limiting", map[string]string{"FAIL_LIMIT": "0", "FAIL_LIMIT_IP": "4"}, nil, 0, 4, ""},
+		{"both zero", map[string]string{"FAIL_LIMIT": "0", "FAIL_LIMIT_IP": "0"}, nil, 0, 0, ""},
+		{"FAIL_LIMIT zero, IP unset", map[string]string{"FAIL_LIMIT": "0"}, nil, 0, 0, ""},
+		{"negative", map[string]string{"FAIL_LIMIT_IP": "-1"}, nil, 0, 0, "FAIL_LIMIT_IP: must not be negative"},
+		{"not a number", map[string]string{"FAIL_LIMIT_IP": "x"}, nil, 0, 0, "FAIL_LIMIT_IP: invalid integer"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := base()
+			for k, v := range tc.env {
+				e[k] = v
+			}
+			c, err := load(t, e, tc.args...)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.FailLimit != tc.wantUser || c.FailLimitIP != tc.wantIP {
+				t.Fatalf("limits = %d/%d, want %d/%d", c.FailLimit, c.FailLimitIP, tc.wantUser, tc.wantIP)
+			}
+		})
+	}
+}
+
+func TestRateLimitRulesApplyWhenOnlyIPLimitSet(t *testing.T) {
+	for name, mod := range map[string]func(map[string]string){
+		"window":   func(e map[string]string) { e["FAIL_WINDOW"] = "0" },
+		"ban time": func(e map[string]string) { e["BAN_TIME"] = "5" },
+		"max keys": func(e map[string]string) { e["RATELIMIT_MAX_KEYS"] = "10" },
+	} {
+		e := base()
+		e["FAIL_LIMIT"] = "0"
+		e["FAIL_LIMIT_IP"] = "3"
+		mod(e)
+		if _, err := load(t, e); err == nil {
+			t.Errorf("%s: expected a validation error with only FAIL_LIMIT_IP > 0", name)
+		}
+	}
+}

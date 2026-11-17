@@ -485,3 +485,57 @@ func TestDisabledReserve(t *testing.T) {
 		t.Fatal("state kept")
 	}
 }
+
+func TestKeyLimits(t *testing.T) {
+	clk := newClock()
+	l := New(Config{
+		Window: time.Minute, BanTime: time.Hour, Now: clk.Now,
+		KeyLimit: func(k string) int {
+			switch k[:2] {
+			case "ip":
+				return 0
+			case "us":
+				return 2
+			}
+			return 4
+		},
+	})
+	if !l.Enabled() {
+		t.Fatal("KeyLimit enables the limiter")
+	}
+	// ip keys are untracked: no budget, no state, no ban, any number of times.
+	for range 50 {
+		r, st := l.Reserve("ip:1")
+		if st != Allowed {
+			t.Fatal(st)
+		}
+		r.Fail()
+	}
+	if l.Banned("ip:1") || l.Len() != 0 {
+		t.Fatal("untracked key left state")
+	}
+	// A mixed reservation only tracks the keys with a limit.
+	r, _ := l.Reserve("ip:1", "user:a")
+	if l.Len() != 1 {
+		t.Fatalf("len = %d", l.Len())
+	}
+	r.Fail()
+	l.Fail("user:a")
+	if !l.Banned("user:a") || l.Banned("ip:1") {
+		t.Fatal("user:a (limit 2) should be banned, ip:1 never")
+	}
+	// Each key uses its own limit for budget checks.
+	r1, _ := l.Reserve("other:x")
+	r2, _ := l.Reserve("other:x")
+	r3, _ := l.Reserve("other:x")
+	r4, st := l.Reserve("other:x")
+	if st != Allowed {
+		t.Fatalf("4th reservation within limit 4: %v", st)
+	}
+	if _, st := l.Reserve("other:x"); st != Throttled {
+		t.Fatalf("5th: %v", st)
+	}
+	for _, r := range []*Reservation{r1, r2, r3, r4} {
+		r.Release()
+	}
+}

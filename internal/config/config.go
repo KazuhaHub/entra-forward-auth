@@ -44,6 +44,7 @@ type Config struct {
 	CacheMaxEntries  int
 	FailWindow       time.Duration
 	FailLimit        int
+	FailLimitIP      int // failures per IP key before a ban; defaults to FailLimit
 	BanTime          time.Duration
 	RatelimitMaxKeys int
 
@@ -87,7 +88,8 @@ var settings = []setting{
 	{"CACHE_TTL", "cache-ttl", "10m", "success cache lifetime; 0 disables"},
 	{"CACHE_MAX_ENTRIES", "cache-max-entries", "10000", "cache bound"},
 	{"FAIL_WINDOW", "fail-window", "10m", "failure counting window"},
-	{"FAIL_LIMIT", "fail-limit", "5", "failures per IP / per user before a ban; 0 disables"},
+	{"FAIL_LIMIT", "fail-limit", "5", "failures per user (and per IP unless FAIL_LIMIT_IP is set) before a ban; 0 disables"},
+	{"FAIL_LIMIT_IP", "fail-limit-ip", "", "failures per IP before a ban; 0 disables per-IP limiting; default: FAIL_LIMIT"},
 	{"BAN_TIME", "ban-time", "15m", "ban duration"},
 	{"RATELIMIT_MAX_KEYS", "ratelimit-max-keys", "100000", "bound on tracked IPs + users"},
 	{"LOG_LEVEL", "log-level", "info", "debug, info, warn or error"},
@@ -150,6 +152,10 @@ func Load(args []string, lookupEnv func(string) (string, bool), out io.Writer) (
 		LogFormat:           strings.ToLower(p.value("LOG_FORMAT")),
 		ShutdownTimeout:     p.duration("SHUTDOWN_TIMEOUT"),
 		ShutdownDrain:       p.duration("SHUTDOWN_DRAIN"),
+	}
+	cfg.FailLimitIP = cfg.FailLimit
+	if strings.TrimSpace(raw("FAIL_LIMIT_IP")) != "" {
+		cfg.FailLimitIP = p.integer("FAIL_LIMIT_IP")
 	}
 	cfg.TrustedProxies = p.prefixes("TRUSTED_PROXIES")
 	cfg.LogLevel = p.level("LOG_LEVEL")
@@ -230,19 +236,19 @@ func (c *Config) validate() error {
 	if c.EntraMaxConcurrency < 1 {
 		add("ENTRA_MAX_CONCURRENCY must be at least 1")
 	}
-	if c.FailLimit > 0 {
+	if c.FailLimit > 0 || c.FailLimitIP > 0 {
 		if c.FailWindow <= 0 {
-			add("FAIL_WINDOW must be greater than zero when FAIL_LIMIT is set")
+			add("FAIL_WINDOW must be greater than zero when FAIL_LIMIT or FAIL_LIMIT_IP is set")
 		}
 		if c.BanTime <= 0 {
-			add("BAN_TIME must be greater than zero when FAIL_LIMIT is set")
+			add("BAN_TIME must be greater than zero when FAIL_LIMIT or FAIL_LIMIT_IP is set")
 		} else if c.BanTime <= c.EntraTimeout {
-			add("BAN_TIME must be greater than ENTRA_TIMEOUT when FAIL_LIMIT is set")
+			add("BAN_TIME must be greater than ENTRA_TIMEOUT when FAIL_LIMIT or FAIL_LIMIT_IP is set")
 		}
 		// Each in-flight attempt can pin two keys (IP and user), and up to
 		// 4x ENTRA_MAX_CONCURRENCY attempts run at once.
 		if need := 8 * c.EntraMaxConcurrency; c.RatelimitMaxKeys < need {
-			add("RATELIMIT_MAX_KEYS must be at least 8 x ENTRA_MAX_CONCURRENCY (%d) when FAIL_LIMIT is set", need)
+			add("RATELIMIT_MAX_KEYS must be at least 8 x ENTRA_MAX_CONCURRENCY (%d) when FAIL_LIMIT or FAIL_LIMIT_IP is set", need)
 		}
 	}
 	if c.Listen == "" {

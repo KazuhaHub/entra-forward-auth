@@ -36,7 +36,7 @@ Order of checks for `/auth` (any HTTP method; the request body is never read):
 7. Miss → Entra ROPC call. Concurrent requests with the same cache key share one call
    (singleflight). Before the call, an attempt is **reserved** atomically on both rate-limit keys:
    the reservation is refused when a key is banned or when failures + pending attempts already
-   reach `FAIL_LIMIT` → **401**, reason `throttled`. The number of concurrent Entra calls is
+   reach the key's limit (`FAIL_LIMIT` / `FAIL_LIMIT_IP`) → **401**, reason `throttled`. The number of concurrent Entra calls is
    bounded (semaphore) and so is the number of in-flight checks; when full → **503**, reason
    `overloaded`. The call runs detached from the client's request context: if the client goes
    away, the outcome is still recorded (failure counted, success cached).
@@ -102,8 +102,13 @@ normalised (`netip.Addr.Unmap()`, zone dropped).
 
 Keys `ip:<addr>` (IPv4 address, or the IPv6 /64 prefix) and `user:<name>`. Usernames rejected by
 the domain allow-list count against the IP key only, so junk names cannot churn the table. Each failure appends a timestamp; timestamps older than
-`FAIL_WINDOW` are dropped; when the count reaches `FAIL_LIMIT` the key is banned for `BAN_TIME` and its
-history cleared (same semantics as the prototype). `FAIL_LIMIT=0` disables rate limiting. Memory is
+`FAIL_WINDOW` are dropped; when the count reaches the key's limit the key is banned for `BAN_TIME` and its
+history cleared (same semantics as the prototype). The limit is `FAIL_LIMIT_IP` for `ip:` keys and
+`FAIL_LIMIT` for `user:` keys; `FAIL_LIMIT_IP` defaults to `FAIL_LIMIT`. A limit of 0 means the key kind is
+not tracked at all (no counting, no reservation budget, no ban): `FAIL_LIMIT_IP=0` is for callers that
+share one source address (for example a RADIUS server); it applies to every client address of the
+instance, so any address can then spray many usernames — run a dedicated instance for such callers; `FAIL_LIMIT=0` with `FAIL_LIMIT_IP>0` limits by IP only; both 0 disables rate limiting.
+Reservations check each key against its own limit (failures + pending) atomically. Memory is
 bounded by `RATELIMIT_MAX_KEYS`: a janitor goroutine prunes expired state every minute, and when the
 bound is hit the oldest-touched failure histories are evicted. Bans are never evicted early; if the
 table is full of active bans, new reservations are refused (fail closed, 503 `overloaded`).
@@ -161,7 +166,8 @@ accept bare seconds (`600`, as in the prototype) or Go durations (`10m`).
 | `CACHE_TTL` | `-cache-ttl` | `10m` | Success cache lifetime; 0 disables |
 | `CACHE_MAX_ENTRIES` | `-cache-max-entries` | `10000` | Cache bound |
 | `FAIL_WINDOW` | `-fail-window` | `10m` | Failure counting window |
-| `FAIL_LIMIT` | `-fail-limit` | `5` | Failures per IP / per user before a ban; 0 disables |
+| `FAIL_LIMIT` | `-fail-limit` | `5` | Failures per user (and per IP unless `FAIL_LIMIT_IP` is set) before a ban; 0 disables |
+| `FAIL_LIMIT_IP` | `-fail-limit-ip` | = `FAIL_LIMIT` | Failures per IP before an IP ban; 0 disables per-IP limiting; unset or empty follows `FAIL_LIMIT` |
 | `BAN_TIME` | `-ban-time` | `15m` | Ban duration |
 | `RATELIMIT_MAX_KEYS` | `-ratelimit-max-keys` | `100000` | Bound on tracked IPs + users |
 | `LOG_LEVEL` | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
@@ -175,8 +181,8 @@ one listed role.
 
 Validation: required values present; exactly one credential (cert + key, or secret file); files
 readable and parseable at start; durations ≥ 0 (`ENTRA_TIMEOUT` > 0; `FAIL_WINDOW` and `BAN_TIME`
-> 0 when `FAIL_LIMIT` > 0, and `BAN_TIME` > `ENTRA_TIMEOUT`; `RATELIMIT_MAX_KEYS` ≥ 8 ×
-`ENTRA_MAX_CONCURRENCY` when `FAIL_LIMIT` > 0); limits ≥ 0; tenant is not `common`/`organizations`/`consumers`; CIDRs valid; authority is `https://`
+> 0 when `FAIL_LIMIT` or `FAIL_LIMIT_IP` > 0, and `BAN_TIME` > `ENTRA_TIMEOUT`; `RATELIMIT_MAX_KEYS` ≥ 8 ×
+`ENTRA_MAX_CONCURRENCY` when either is > 0); limits ≥ 0; tenant is not `common`/`organizations`/`consumers`; CIDRs valid; authority is `https://`
 (plain `http://` allowed only for `127.0.0.1`/`localhost`, for tests). The tenant ID and client ID
 are logged at start; secrets never.
 

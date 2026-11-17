@@ -19,8 +19,12 @@ import (
 // Config configures a Limiter.
 type Config struct {
 	// Limit is the number of failures within Window that triggers a ban.
-	// Zero (or less) disables the limiter entirely.
+	// Zero (or less) disables limiting, unless KeyLimit says otherwise.
 	Limit int
+	// KeyLimit, if set, gives the limit for each key and replaces Limit; a
+	// result of zero (or less) means that key is not tracked at all: no
+	// counting, no budget, no ban.
+	KeyLimit func(key string) int
 	// Window is how long a failure counts.
 	Window time.Duration
 	// BanTime is how long a ban lasts.
@@ -89,7 +93,15 @@ func New(cfg Config) *Limiter {
 }
 
 // Enabled reports whether the limiter does anything.
-func (l *Limiter) Enabled() bool { return l.cfg.Limit > 0 }
+func (l *Limiter) Enabled() bool { return l.cfg.Limit > 0 || l.cfg.KeyLimit != nil }
+
+// limitOf returns the failure limit for key; zero means untracked.
+func (l *Limiter) limitOf(key string) int {
+	if l.cfg.KeyLimit != nil {
+		return l.cfg.KeyLimit(key)
+	}
+	return l.cfg.Limit
+}
 
 // Reservation is one counted attempt across one or more keys. Settle it
 // exactly once with Fail or Release; further calls are ignored.
@@ -100,7 +112,8 @@ type Reservation struct {
 }
 
 // Reserve atomically checks keys and, if none is banned and every key still
-// has budget (failures in the window plus pending attempts below Limit),
+// has budget (failures in the window plus pending attempts below that key's
+// limit; keys whose limit is zero are ignored),
 // registers a pending attempt on all of them. On any refusal nothing is
 // registered and the returned Reservation is nil. With the limiter disabled
 // the reservation is a no-op.
@@ -114,6 +127,14 @@ func (l *Limiter) Reserve(keys ...string) (*Reservation, Status) {
 	}
 	now := l.now()
 	cutoff := now.Add(-l.cfg.Window)
+
+	tracked := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if l.limitOf(k) > 0 {
+			tracked = append(tracked, k)
+		}
+	}
+	keys = tracked
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -129,7 +150,7 @@ func (l *Limiter) Reserve(keys ...string) (*Reservation, Status) {
 			continue
 		}
 		e.trim(cutoff)
-		if len(e.fails)+e.pending >= l.cfg.Limit {
+		if len(e.fails)+e.pending >= l.limitOf(k) {
 			return nil, Throttled
 		}
 	}
@@ -211,7 +232,7 @@ func (l *Limiter) Fail(key string) bool {
 
 // Banned reports whether key is currently banned.
 func (l *Limiter) Banned(key string) bool {
-	if !l.Enabled() {
+	if l.limitOf(key) <= 0 {
 		return false
 	}
 	now := l.now()
@@ -233,7 +254,7 @@ func (l *Limiter) recordFail(e *entry, now time.Time) bool {
 	}
 	e.trim(now.Add(-l.cfg.Window))
 	e.fails = append(e.fails, now)
-	if len(e.fails) < l.cfg.Limit {
+	if len(e.fails) < l.limitOf(e.key) {
 		return false
 	}
 	e.fails = nil

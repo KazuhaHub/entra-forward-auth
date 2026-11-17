@@ -71,6 +71,7 @@ type opts struct {
 	cacheTTL   time.Duration
 	failLimit  int
 	maxKeys    int
+	ipLimit    *int // FAIL_LIMIT_IP; nil = same as failLimit
 	noDefaults bool
 }
 
@@ -87,9 +88,19 @@ func newHarness(t *testing.T, o opts) *harness {
 	h := &harness{t: t, entra: &fakeEntra{}, logs: &bytes.Buffer{}}
 	h.metrics = metrics.New("test", "rev")
 	h.cache = cache.New(o.cacheTTL, 100, nil)
-	h.limiter = ratelimit.New(ratelimit.Config{
+	lcfg := ratelimit.Config{
 		Limit: o.failLimit, Window: time.Minute, BanTime: time.Hour, MaxKeys: o.maxKeys, OnBan: h.metrics.Ban,
-	})
+	}
+	if o.ipLimit != nil {
+		ipLimit, userLimit := *o.ipLimit, o.failLimit
+		lcfg.KeyLimit = func(key string) int {
+			if strings.HasPrefix(key, "ip:") {
+				return ipLimit
+			}
+			return userLimit
+		}
+	}
+	h.limiter = ratelimit.New(lcfg)
 	h.metrics.WatchCache(h.cache.Len)
 	h.metrics.WatchBanned(h.limiter.CountBanned)
 
@@ -1028,5 +1039,120 @@ func TestPanicInAttemptReleasesReservation(t *testing.T) {
 	}
 	if h.inFlight() != 0 {
 		t.Fatal("flight not cleaned up")
+	}
+}
+
+func intp(n int) *int { return &n }
+
+// FAIL_LIMIT_IP unset: IP keys share FAIL_LIMIT, so one noisy IP is banned.
+func TestIPLimitUnsetBansIP(t *testing.T) {
+	h := newHarness(t, opts{failLimit: 2})
+	h.auth("a@example.com", "bad", "203.0.113.1")
+	h.auth("b@example.com", "bad", "203.0.113.1")
+	if rec := h.auth("c@example.com", "good", "203.0.113.1"); rec.Code != 401 {
+		t.Fatalf("status = %d; the IP should be banned", rec.Code)
+	}
+}
+
+// FAIL_LIMIT_IP=0 for callers that all share one source address.
+func TestIPLimitZeroNeverBansIPButBansUser(t *testing.T) {
+	h := newHarness(t, opts{failLimit: 3, ipLimit: intp(0)})
+	const ip = "127.0.0.2"
+	// Many users, each with fewer than FAIL_LIMIT failures, from one IP.
+	for i := range 30 {
+		user := fmt.Sprintf("user%d@example.com", i)
+		h.auth(user, "bad", ip)
+		h.auth(user, "bad2", ip)
+	}
+	for i := range 30 {
+		if rec := h.auth(fmt.Sprintf("user%d@example.com", i), "good", ip); rec.Code != 204 {
+			t.Fatalf("user%d refused with status %d; per-IP banning must be off", i, rec.Code)
+		}
+	}
+	// One user reaching FAIL_LIMIT is banned; others on the same IP are fine.
+	for range 3 {
+		h.auth("victim@example.com", "bad", ip)
+	}
+	if rec := h.auth("victim@example.com", "good", ip); rec.Code != 401 {
+		t.Fatalf("victim status = %d, want banned", rec.Code)
+	}
+	if rec := h.auth("bystander@example.com", "good", ip); rec.Code != 204 {
+		t.Fatalf("bystander status = %d", rec.Code)
+	}
+	if h.limiter.CountBanned("ip:") != 0 || h.limiter.CountBanned("user:") != 1 {
+		t.Fatalf("bans ip=%d user=%d", h.limiter.CountBanned("ip:"), h.limiter.CountBanned("user:"))
+	}
+	// 30 user histories plus the banned victim; no IP key at all.
+	if h.limiter.Len() != 31 {
+		t.Fatalf("limiter tracks %d keys, want 31 user keys and no IP key", h.limiter.Len())
+	}
+}
+
+func TestIPLimitZeroDomainRejectsNotCounted(t *testing.T) {
+	h := newHarness(t, opts{failLimit: 2, ipLimit: intp(0), cfg: func(c *Config) { c.AllowedDomains = []string{"@example.com"} }})
+	for i := range 10 {
+		if rec := h.auth(fmt.Sprintf("x%d@evil.com", i), "pw", "203.0.113.1"); rec.Code != 401 {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	}
+	if h.limiter.Len() != 0 {
+		t.Fatalf("limiter tracks %d keys; domain rejects must not count with FAIL_LIMIT_IP=0", h.limiter.Len())
+	}
+	if rec := h.auth("ok@example.com", "good", "203.0.113.1"); rec.Code != 204 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+func TestUserLimitZeroWithIPLimit(t *testing.T) {
+	h := newHarness(t, opts{noDefaults: true, cacheTTL: time.Minute, ipLimit: intp(2)})
+	h.auth("a@example.com", "bad", "203.0.113.1")
+	h.auth("a@example.com", "bad2", "203.0.113.1")
+	if h.limiter.Banned("user:a@example.com") {
+		t.Fatal("user limiting is off")
+	}
+	if rec := h.auth("b@example.com", "good", "203.0.113.1"); rec.Code != 401 {
+		t.Fatalf("status = %d; the IP limit still applies", rec.Code)
+	}
+	if rec := h.auth("a@example.com", "good", "198.51.100.5"); rec.Code != 204 {
+		t.Fatalf("status = %d; the user was never banned", rec.Code)
+	}
+}
+
+func TestSeparateIPAndUserLimits(t *testing.T) {
+	h := newHarness(t, opts{failLimit: 3, ipLimit: intp(6)})
+	// The user limit (3) is hit first, from different IPs.
+	for i := range 3 {
+		h.auth("victim@example.com", "bad", fmt.Sprintf("203.0.113.%d", i+1))
+	}
+	if !h.limiter.Banned("user:victim@example.com") {
+		t.Fatal("user should be banned at 3")
+	}
+	// One IP, many users: banned only at the IP limit (6), not at 3.
+	for i := range 5 {
+		h.auth(fmt.Sprintf("u%d@example.com", i), "bad", "198.51.100.1")
+	}
+	if h.limiter.Banned("ip:198.51.100.1") {
+		t.Fatal("IP must not be banned below its own limit")
+	}
+	h.auth("u5@example.com", "bad", "198.51.100.1")
+	if !h.limiter.Banned("ip:198.51.100.1") {
+		t.Fatal("IP should be banned at 6")
+	}
+}
+
+func TestParallelGuessBoundPerKeyWithIPLimit(t *testing.T) {
+	h := newHarness(t, opts{failLimit: 3, ipLimit: intp(0)})
+	h.entra.fn = func(context.Context, string, string) (entra.Result, error) {
+		time.Sleep(50 * time.Millisecond)
+		return entra.Result{Verdict: entra.Rejected}, nil
+	}
+	var wg sync.WaitGroup
+	for i := range 40 {
+		wg.Add(1)
+		go func() { defer wg.Done(); h.auth("victim@example.com", fmt.Sprintf("g%d", i), "127.0.0.2") }()
+	}
+	wg.Wait()
+	if got := h.entra.calls.Load(); got > 3 {
+		t.Fatalf("%d guesses reached Entra, user limit is 3", got)
 	}
 }

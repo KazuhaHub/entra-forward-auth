@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-17
+
+### Added
+
+- `FAIL_LIMIT_IP` / `-fail-limit-ip`: a separate failure limit for IP keys, for callers that share one
+  source address (for example a RADIUS server calling `/auth` locally). Unset (or empty) it equals
+  `FAIL_LIMIT`, so behaviour is unchanged. `0` turns per-IP counting, reservation and banning off
+  (domain allow-list rejections are then not counted either) while per-user limits keep working;
+  `FAIL_LIMIT=0` with a positive `FAIL_LIMIT_IP` limits by IP only. The rate-limit validation rules
+  apply when either limit is above 0, and the effective limits are logged at startup.
+
 ## [0.1.0] - 2026-11-16
 
 ### Added
@@ -46,5 +57,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Multi-architecture distroless container image running as a non-root user, release binaries for
   Linux and macOS, `SHA256SUMS`, build provenance attestations, SBOM and keyless cosign signatures.
 
-[Unreleased]: https://github.com/KazuhaHub/entra-forward-auth/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/KazuhaHub/entra-forward-auth/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/KazuhaHub/entra-forward-auth/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/KazuhaHub/entra-forward-auth/releases/tag/v0.1.0
