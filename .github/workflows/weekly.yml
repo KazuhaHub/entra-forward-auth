@@ -1,8 +1,8 @@
 name: Weekly
 
-# GitHub disables scheduled workflows after 60 days without repository activity.
 on:
   schedule:
+    # GitHub disables scheduled workflows after 60 days without repository activity.
     - cron: "23 4 * * 1"
   workflow_dispatch:
 
@@ -10,12 +10,10 @@ permissions: {}
 
 env:
   GOWORK: "off"
-  # Use exactly the Go that setup-go installed from go.mod; never download another toolchain.
-  GOTOOLCHAIN: "local"
 
 jobs:
   vulncheck:
-    name: vulncheck
+    name: weekly-vulncheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

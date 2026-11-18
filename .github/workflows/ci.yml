@@ -15,8 +15,6 @@ concurrency:
 
 env:
   GOWORK: "off"
-  # Use exactly the Go that setup-go installed from go.mod; never download another toolchain.
-  GOTOOLCHAIN: "local"
 
 jobs:
   lint:
