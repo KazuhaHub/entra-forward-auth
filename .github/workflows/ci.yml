@@ -8,12 +8,15 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its stale run; each main push gets its own group and is never cancelled.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GOWORK: "off"
+  # Use exactly the Go that setup-go installed from go.mod; never download another toolchain.
+  GOTOOLCHAIN: "local"
 
 jobs:
   lint:
@@ -36,6 +39,9 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+      # Lint the workflow files themselves (also runs shellcheck on run: blocks).
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
@@ -81,7 +87,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
 
   build:
     name: build
